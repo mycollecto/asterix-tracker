@@ -1,0 +1,125 @@
+name: Cover-Bilder herunterladen
+
+on:
+  workflow_dispatch:
+
+jobs:
+  download-covers:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Ordner erstellen
+        run: mkdir -p covers/haupt
+
+      - name: Cover herunterladen
+        run: |
+          python3 << 'PYEOF'
+          import urllib.request, urllib.parse, os, time, json, hashlib, re
+
+          BASE_API = 'https://asterix.fandom.com/de/api.php'
+          H = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'}
+
+          def get_img(title):
+            if title.startswith('Datei:') or title.startswith('File:'):
+              url = BASE_API + '?action=query&titles=' + urllib.parse.quote(title) + '&prop=imageinfo&iiprop=url&format=json'
+              try:
+                req = urllib.request.Request(url, headers=H)
+                with urllib.request.urlopen(req, timeout=15) as r:
+                  data = json.loads(r.read())
+                for pid, page in data.get('query',{}).get('pages',{}).items():
+                  info = page.get('imageinfo', [])
+                  if info and info[0].get('url'):
+                    return info[0]['url']
+              except: pass
+              return None
+            url = BASE_API + '?action=query&titles=' + urllib.parse.quote(title) + '&prop=pageimages&pithumbsize=500&format=json'
+            try:
+              req = urllib.request.Request(url, headers=H)
+              with urllib.request.urlopen(req, timeout=15) as r:
+                data = json.loads(r.read())
+              for pid, page in data.get('query',{}).get('pages',{}).items():
+                src = page.get('thumbnail',{}).get('source','')
+                if src: return src
+            except: pass
+            return None
+
+          def dl(url, path):
+            req = urllib.request.Request(url, headers=H)
+            with urllib.request.urlopen(req, timeout=20) as r: data = r.read()
+            if len(data) > 1000: open(path,'wb').write(data); return True
+            return False
+
+          HAUPT = {
+            1:'Asterix der Gallier',2:'Asterix und Kleopatra',3:'Asterix als Gladiator',
+            4:'Tour de France',5:'Asterix und die Goten',6:'Die goldene Sichel',
+            7:'Der Kampf der Häuptlinge',8:'Asterix bei den Briten',9:'Asterix und die Normannen',
+            10:'Asterix als Legionär',11:'Asterix und der Arvernerschild',
+            12:'Asterix bei den Olympischen Spielen',13:'Asterix und der Kupferkessel',
+            14:'Asterix in Spanien',15:'Streit um Asterix',16:'Asterix bei den Schweizern',
+            17:'Die Trabantenstadt',18:'Die Lorbeeren des Cäsar',19:'Der Seher',
+            20:'Asterix auf Korsika',21:'Das Geschenk Cäsars',22:'Die große Überfahrt',
+            23:'Obelix GmbH & Co. KG',24:'Asterix bei den Belgiern',25:'Der große Graben',
+            26:'Die Odyssee',27:'Der Sohn des Asterix',28:'Asterix im Morgenland',
+            29:'Asterix und Maestria',30:'Obelix auf Kreuzfahrt',31:'Asterix und Latraviata',
+            32:'Asterix plaudert aus der Schule',33:'Gallien in Gefahr',
+            34:'Der Himmel fällt auf sie herab',35:'Asterix bei den Pikten',
+            36:'Der Papyrus des Cäsar',37:'Asterix bei den Gladiatoren',
+            38:'Die Tochter des Vercingetorix',39:'Asterix und der Greif',
+            40:'Die weiße Iris',41:'Asterix in Lusitanien',
+          }
+
+          ok = skip = 0
+          print('\n=== haupt ===')
+          for n in range(1, 42):
+            if any(os.path.exists('covers/haupt/'+str(n)+'.'+e) for e in ['jpg','jpeg','png','webp']):
+              continue
+            title = HAUPT.get(n)
+            if not title: skip+=1; continue
+            img = get_img(title + ' (Comic)')
+            if not img: img = get_img(title)
+            if img:
+              ext = 'png' if '.png' in img.lower() else 'jpg'
+              try:
+                if dl(img, 'covers/haupt/'+str(n)+'.'+ext): ok+=1
+                else: skip+=1
+              except: skip+=1
+            else: skip+=1
+            time.sleep(0.2)
+          print('haupt: '+str(ok)+' OK, '+str(skip)+' skip')
+
+          # Dedup
+          folder = 'covers/haupt'
+          hashes = {}
+          total_dup = 0
+          for fname in sorted(f for f in os.listdir(folder) if f.lower().endswith(('.jpg','.png','.webp'))):
+            path = os.path.join(folder, fname)
+            h = hashlib.md5(open(path,'rb').read()).hexdigest()
+            if h in hashes:
+              nums = re.findall(r'\d+', fname)
+              n2 = int(nums[-1]) if nums else 0
+              nums1 = re.findall(r'\d+', hashes[h])
+              n1 = int(nums1[-1]) if nums1 else 0
+              remove = hashes[h] if n1 < n2 else fname
+              os.remove(os.path.join(folder, remove))
+              hashes[h] = fname if n1 < n2 else hashes[h]
+              total_dup += 1
+            else:
+              hashes[h] = fname
+          print('Duplikate entfernt: '+str(total_dup))
+          PYEOF
+
+      - name: Committen
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add covers/
+          git diff --staged --quiet && echo "Keine Aenderungen" || (
+            COUNT=$(find covers -type f | wc -l)
+            git commit -m "Cover aktualisiert ($COUNT Dateien)"
+            git pull --rebase origin main
+            git push
+          )
