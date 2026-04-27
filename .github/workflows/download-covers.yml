@@ -21,7 +21,8 @@ jobs:
           import urllib.request, urllib.parse, os, time, json, hashlib, re
 
           BASE_API = 'https://asterix.fandom.com/de/api.php'
-          H = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'}
+          H = {'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36',
+               'Referer': 'https://asterix.fandom.com/'}
 
           def get_img(title):
             if title.startswith('Datei:') or title.startswith('File:'):
@@ -32,8 +33,7 @@ jobs:
                   data = json.loads(r.read())
                 for pid, page in data.get('query',{}).get('pages',{}).items():
                   info = page.get('imageinfo', [])
-                  if info and info[0].get('url'):
-                    return info[0]['url']
+                  if info and info[0].get('url'): return info[0]['url']
               except: pass
               return None
             url = BASE_API + '?action=query&titles=' + urllib.parse.quote(title) + '&prop=pageimages&pithumbsize=500&format=json'
@@ -44,6 +44,42 @@ jobs:
               for pid, page in data.get('query',{}).get('pages',{}).items():
                 src = page.get('thumbnail',{}).get('source','')
                 if src: return src
+            except: pass
+            return None
+
+          def get_img_wikitext(title):
+            try:
+              raw = 'https://asterix.fandom.com/de/wiki/' + urllib.parse.quote(title.replace(' ','_')) + '?action=raw'
+              req = urllib.request.Request(raw, headers=H)
+              with urllib.request.urlopen(req, timeout=15) as r:
+                wikitext = r.read().decode('utf-8', errors='replace')
+              fname = None
+              for part in wikitext.replace('\n','|').split('|'):
+                part = part.strip()
+                if '=' in part:
+                  k, v = part.split('=', 1)
+                  if k.strip().lower() in ('bild','image','image1','img','cover'):
+                    fname = v.strip().split('|')[0].strip()
+                    if fname: break
+              if fname:
+                src = get_img('Datei:' + fname)
+                if not src: src = get_img('File:' + fname)
+                return src
+            except: pass
+            return None
+
+          def get_img_og(title):
+            try:
+              url = 'https://asterix.fandom.com/de/wiki/' + urllib.parse.quote(title.replace(' ','_'))
+              req = urllib.request.Request(url, headers=H)
+              with urllib.request.urlopen(req, timeout=15) as r:
+                html = r.read().decode('utf-8', errors='replace')
+              m = re.search(r'<meta property="og:image" content="([^"]+)"', html)
+              if m:
+                src = m.group(1)
+                if 'wikia.nocookie.net' in src or 'static.wikia' in src:
+                  src = re.sub(r'/revision/latest/scale-to-width-down/[0-9]+', '/revision/latest', src)
+                  return src
             except: pass
             return None
 
@@ -66,8 +102,8 @@ jobs:
             26:'Die Odyssee',27:'Der Sohn des Asterix',28:'Asterix im Morgenland',
             29:'Asterix und Maestria',30:'Obelix auf Kreuzfahrt',31:'Asterix und Latraviata',
             32:'Asterix plaudert aus der Schule',33:'Gallien in Gefahr',
-            34:'Der Himmel fällt auf sie herab',35:'Asterix bei den Pikten',
-            36:'Der Papyrus des Cäsar',37:'Asterix bei den Gladiatoren',
+            34:'Asterix & Obelix feiern Geburtstag',35:'Asterix bei den Pikten',
+            36:'Der Papyrus des Cäsar',37:'Asterix in Italien',
             38:'Die Tochter des Vercingetorix',39:'Asterix und der Greif',
             40:'Die weiße Iris',41:'Asterix in Lusitanien',
           }
@@ -79,8 +115,15 @@ jobs:
               continue
             title = HAUPT.get(n)
             if not title: skip+=1; continue
-            img = get_img(title + ' (Comic)')
-            if not img: img = get_img(title)
+            img = None
+            # Strategy 1: direct title
+            img = get_img(title)
+            # Strategy 2: with (Comic) disambiguation
+            if not img: img = get_img(title + ' (Comic)')
+            # Strategy 3: wikitext
+            if not img: img = get_img_wikitext(title)
+            # Strategy 4: og:image
+            if not img: img = get_img_og(title)
             if img:
               ext = 'png' if '.png' in img.lower() else 'jpg'
               try:
@@ -88,13 +131,12 @@ jobs:
                 else: skip+=1
               except: skip+=1
             else: skip+=1
-            time.sleep(0.2)
+            time.sleep(0.3)
           print('haupt: '+str(ok)+' OK, '+str(skip)+' skip')
 
           # Dedup
           folder = 'covers/haupt'
-          hashes = {}
-          total_dup = 0
+          hashes = {}; dups = 0
           for fname in sorted(f for f in os.listdir(folder) if f.lower().endswith(('.jpg','.png','.webp'))):
             path = os.path.join(folder, fname)
             h = hashlib.md5(open(path,'rb').read()).hexdigest()
@@ -106,10 +148,9 @@ jobs:
               remove = hashes[h] if n1 < n2 else fname
               os.remove(os.path.join(folder, remove))
               hashes[h] = fname if n1 < n2 else hashes[h]
-              total_dup += 1
-            else:
-              hashes[h] = fname
-          print('Duplikate entfernt: '+str(total_dup))
+              dups += 1
+            else: hashes[h] = fname
+          print('Gesamt: '+str(ok)+', Duplikate: '+str(dups))
           PYEOF
 
       - name: Committen
